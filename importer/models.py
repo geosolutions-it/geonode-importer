@@ -20,8 +20,11 @@ def delete_dynamic_model(instance, sender, **kwargs):
     try:
         geoserver_delete(instance.alternate)
         name = instance.alternate.split(":")[1]
-        ModelSchema.objects.filter(name=name).delete()
-        FieldSchema.objects.filter(name=name).delete()
+        schema = ModelSchema.objects.filter(name=name)
+        if schema.exists():
+            for field in schema.first().fields.all():
+                field.delete()
+            ModelSchema.objects.filter(name=name).delete()
         # Removing Field Schema
     except Exception as e:
         logger.error(f"Error during deletion of Dynamic Model schema: {e.args[0]}")

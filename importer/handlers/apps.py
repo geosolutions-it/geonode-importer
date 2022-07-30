@@ -13,4 +13,6 @@ class HandlersConfig(AppConfig):
 
 def run_setup_hooks(*args, **kwargs):
     from .gpkg.handler import GPKGFileHandler
+    from .geojson.handler import GeoJsonFileHandler
     GPKGFileHandler.register()
+    GeoJsonFileHandler.register()

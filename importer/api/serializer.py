@@ -10,8 +10,8 @@ class ImporterSerializer(serializers.Serializer):
         )
 
     base_file = serializers.FileField()
-    xml_file = serializers.CharField(required=False)
-    sld_file = serializers.CharField(required=False)
+    xml_file = serializers.FileField(required=False)
+    sld_file = serializers.FileField(required=False)
     store_spatial_files = serializers.BooleanField(required=False, default=True)
     override_existing_layer = serializers.BooleanField(required=False, default=False)
     skip_existing_layers = serializers.BooleanField(required=False, default=False)

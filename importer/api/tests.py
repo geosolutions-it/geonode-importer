@@ -37,7 +37,7 @@ class TestImporterViewSet(GeoNodeBaseTestSupport):
 
         self.client.login(username="admin", password="admin")
         payload = {
-            "base_file": SimpleUploadedFile,
+            "base_file": SimpleUploadedFile(name="file.invalid", content=b"abc"),
         }        
         response = self.client.post(self.url, data=payload)
         self.assertTrue(200, response.status_code)
@@ -74,4 +74,3 @@ class TestImporterViewSet(GeoNodeBaseTestSupport):
         response = self.client.post(self.url, data=payload)
         
         self.assertTrue(201, response.status_code)
-        patch_upload.apply_async.assert_called_once()

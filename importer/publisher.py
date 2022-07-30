@@ -30,7 +30,7 @@ class DataPublisher():
         )
         self.workspace = get_geoserver_cascading_workspace(create=True)
 
-        self.handler = import_string(handler_module_path)
+        self.handler = import_string(handler_module_path)()
 
     def extract_resource_to_publish(self, files: dict, action: str, layer_name, alternate=None):
         '''

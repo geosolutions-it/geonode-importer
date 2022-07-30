@@ -3,16 +3,24 @@ from typing import Optional
 from uuid import UUID
 
 from celery import Task
+from django.db import connections, transaction
 from django.utils import timezone
 from django.utils.module_loading import import_string
 from django.utils.translation import ugettext
-from importer.api.exception import (InvalidInputFileException,
-                                    PublishResourceException, CopyResourceException,
+from dynamic_models.exceptions import DynamicModelError, InvalidFieldNameError
+from dynamic_models.models import FieldSchema, ModelSchema
+from geonode.base.models import ResourceBase
+from geonode.resource.enumerator import ExecutionRequestAction as exa
+
+from importer.api.exception import (CopyResourceException,
+                                    InvalidInputFileException,
+                                    PublishResourceException,
                                     ResourceCreationException,
                                     StartImportException)
 from importer.celery_app import importer_app
 from importer.datastore import DataStoreManager
-from importer.handlers.utils import create_alternate
+from importer.handlers.gpkg.tasks import SingleMessageErrorHandler
+from importer.handlers.utils import create_alternate, drop_dynamic_model_schema
 from importer.models import ResourceHandlerInfo
 from importer.orchestrator import orchestrator
 from importer.publisher import DataPublisher
@@ -20,9 +28,6 @@ from importer.settings import (IMPORTER_GLOBAL_RATE_LIMIT,
                                IMPORTER_PUBLISHING_RATE_LIMIT,
                                IMPORTER_RESOURCE_CREATION_RATE_LIMIT)
 from importer.utils import error_handler
-from geonode.base.models import ResourceBase
-from geonode.resource.enumerator import ExecutionRequestAction as exa
-from celery.exceptions import TaskError
 
 logger = logging.getLogger(__name__)
 
@@ -379,3 +384,151 @@ def copy_geonode_resource(exec_id, actual_step, layer_name, alternate, handler_m
     except Exception as e:
         raise CopyResourceException(detail=e)
     return exec_id, new_alternate
+
+
+@importer_app.task(
+    base=SingleMessageErrorHandler,
+    name="importer.create_dynamic_structure",
+    queue="importer.create_dynamic_structure",
+    max_retries=1,
+    acks_late=False,
+    ignore_result=False,
+    task_track_started=True
+)
+def create_dynamic_structure(execution_id: str, fields: dict, dynamic_model_schema_id: int, overwrite: bool, layer_name: str):
+    def _create_field(dynamic_model_schema, field, _kwargs):
+        # common method to define the Field Schema object
+        return FieldSchema(
+                    name=field['name'],
+                    class_name=field['class_name'],
+                    model_schema=dynamic_model_schema,
+                    kwargs=_kwargs
+                )
+    '''
+    Create the single dynamic model field for each layer. Is made by a batch of 30 field
+    '''
+    dynamic_model_schema = ModelSchema.objects.filter(id=dynamic_model_schema_id)
+    if not dynamic_model_schema.exists():
+        raise DynamicModelError(f"The model with id {dynamic_model_schema_id} does not exists.")
+
+    dynamic_model_schema = dynamic_model_schema.first()
+
+    row_to_insert = []
+    for field in fields:
+        # setup kwargs for the class provided
+        if field['class_name'] is None or field['name'] is None:
+            logger.error(f"Error during the field creation. The field or class_name is None {field}")
+            raise InvalidFieldNameError(f"Error during the field creation. The field or class_name is None {field}")
+
+        _kwargs = {"null": field.get('null', True)}
+        if field['class_name'].endswith('CharField'):
+            _kwargs = {**_kwargs, **{"max_length": 255}}
+    
+        # if is a new creation we generate the field model from scratch
+        if not overwrite:
+            row_to_insert.append(_create_field(dynamic_model_schema, field, _kwargs))
+        else:
+            # otherwise if is an overwrite, we update the existing one and create the one that does not exists
+            _field_exists = FieldSchema.objects.filter(name=field['name'], model_schema=dynamic_model_schema)
+            if _field_exists.exists():
+                _field_exists.update(
+                    class_name=field['class_name'],
+                    model_schema=dynamic_model_schema,
+                    kwargs=_kwargs
+                )
+            else:    
+                row_to_insert.append(_create_field(dynamic_model_schema, field, _kwargs))
+    
+    if row_to_insert:
+        # the build creation improves the overall permformance with the DB
+        FieldSchema.objects.bulk_create(row_to_insert, 30)
+
+    del row_to_insert
+    return "dynamic_model", layer_name, execution_id
+
+
+@importer_app.task(
+    base=ErrorBaseTaskClass,
+    name="importer.copy_dynamic_model",
+    queue="importer.copy_dynamic_model",
+    task_track_started=True
+)
+def copy_dynamic_model(exec_id, actual_step, layer_name, alternate, handlers_module_path, action, **kwargs):
+    '''
+    Once the base resource is copied, is time to copy also the dynamic model
+    '''
+    original_dataset_alternate = kwargs.get("kwargs").get("original_dataset_alternate")
+    new_dataset_alternate = kwargs.get("kwargs").get("new_dataset_alternate")
+
+    from importer.celery_tasks import import_orchestrator
+    try:
+        dynamic_schema = ModelSchema.objects.filter(name=original_dataset_alternate.split(':')[1])
+        alternative_dynamic_schema = ModelSchema.objects.filter(name=new_dataset_alternate.split(':')[1])
+
+        if dynamic_schema.exists() and not alternative_dynamic_schema.exists():
+            # Creating the dynamic schema object
+            new_schema = dynamic_schema.first()
+            new_schema.name = new_dataset_alternate.split(':')[1]
+            new_schema.pk = None
+            new_schema.save()
+            # create the field_schema object
+            fields = []
+            for field in dynamic_schema.first().fields.all():
+                obj = field
+                obj.model_schema=new_schema
+                obj.pk = None
+                fields.append(obj)
+
+            FieldSchema.objects.bulk_create(fields)
+
+        task_params = ({}, exec_id, handlers_module_path, actual_step, layer_name, alternate, action)
+        # for some reason celery will always put the kwargs into a key kwargs
+        # so we need to remove it
+        kwargs = kwargs.get('kwargs') if "kwargs" in kwargs else kwargs
+
+        import_orchestrator.apply_async(task_params, kwargs)
+    except Exception as e:
+        raise CopyResourceException(detail=e)
+    return exec_id, kwargs
+
+
+@importer_app.task(
+    base=ErrorBaseTaskClass,
+    name="importer.copy_geonode_data_table",
+    queue="importer.copy_geonode_data_table",
+    task_track_started=True
+)
+def copy_geonode_data_table(exec_id, actual_step, layer_name, alternate, handlers_module_path, action, **kwargs):
+    '''
+    Once the base resource is copied, is time to copy also the dynamic model
+    '''
+    original_dataset_alternate = kwargs.get("kwargs").get("original_dataset_alternate").split(':')[1]
+    new_dataset_alternate = kwargs.get("kwargs").get("new_dataset_alternate").split(':')[1]
+
+    from importer.celery_tasks import import_orchestrator
+    try:
+        
+        db_name = ModelSchema.objects.filter(name=new_dataset_alternate).first().db_name
+        with transaction.atomic():
+            with connections[db_name].cursor() as cursor:
+                cursor.execute(
+                    f"CREATE TABLE {new_dataset_alternate} AS TABLE {original_dataset_alternate};"
+                )
+
+        task_params = ({}, exec_id, handlers_module_path, actual_step, layer_name, alternate, action)
+
+        import_orchestrator.apply_async(task_params, kwargs)
+    except Exception as e:
+        raise CopyResourceException(detail=e)
+    return exec_id, kwargs
+
+
+@importer_app.task(name='dynamic_model_error_callback')
+def dynamic_model_error_callback(*args, **kwargs):
+    # revert eventually the import in ogr2ogr or the creation of the model in case of failing
+    alternate = args[0].args[-1]
+    schema_model = ModelSchema.objects.filter(name=alternate).first()
+
+    drop_dynamic_model_schema(schema_model)
+
+    return 'error'

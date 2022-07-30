@@ -13,7 +13,7 @@ class TestDataPublisher(TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.publisher = DataPublisher()
+        cls.publisher = DataPublisher(handler_module_path='importer.handlers.gpkg.handler.GPKGFileHandler')
         cls.gpkg_path = f"{project_dir}/tests/fixture/valid.gpkg"
 
 
@@ -24,7 +24,7 @@ class TestDataPublisher(TestCase):
         '''
         values_found = self.publisher.extract_resource_to_publish(
             files={"base_file": self.gpkg_path},
-            resource_type="gpkg",
+            action="import",
             layer_name="stazioni_metropolitana"
         )
         expected = {
@@ -40,7 +40,7 @@ class TestDataPublisher(TestCase):
         '''
         values_found = self.publisher.extract_resource_to_publish(
             files={"base_file": "/wrong/path/file.gpkg"},
-            resource_type="gpkg",
+            action="import",
             layer_name="stazioni_metropolitana"
         )
         self.assertListEqual([], values_found)
@@ -73,22 +73,20 @@ class TestDataPublisher(TestCase):
     def test_publish_resources_should_continue_in_case_the_resource_is_already_published(self, publish_featuretype):
         publish_featuretype.side_effect = Exception("Resource named stazioni_metropolitana already exists in store:")
 
-        result, workspace, store = self.publisher.publish_resources(
+        result = self.publisher.publish_resources(
             resources=[{
                 "crs": "EPSG:32632",
                 "name": "stazioni_metropolitana"
             }]
         )
         self.assertTrue(result)
-        self.assertEqual(workspace, "geonode")
-        self.assertEqual(store, "geonode_data")
         publish_featuretype.assert_called_once()
 
     @patch("importer.publisher.Catalog.publish_featuretype")
     def test_publish_resources_should_work(self, publish_featuretype):
         publish_featuretype.return_value = True
 
-        result, workspace, store = self.publisher.publish_resources(
+        result= self.publisher.publish_resources(
             resources=[{
                 "crs": "EPSG:32632",
                 "name": "stazioni_metropolitana"
@@ -96,6 +94,4 @@ class TestDataPublisher(TestCase):
         )
 
         self.assertTrue(result)
-        self.assertEqual(workspace, "geonode")
-        self.assertEqual(store, "geonode_data")
         publish_featuretype.assert_called_once()

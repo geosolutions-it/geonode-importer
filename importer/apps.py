@@ -35,7 +35,10 @@ def run_setup_hooks(*args, **kwargs):
         )
 
     # injecting the new config required for FE
-    gpkg_config = [{"id": 'gpkg', "label": 'GeoPackage', "format": 'archive', "ext": ['gpkg']}]
+    gpkg_config = [
+        {"id": 'gpkg', "label": 'GeoPackage', "format": 'archive', "ext": ['gpkg']},
+        {"id": 'geojson', "label": 'GeoJson', "format": 'metadata', "ext": ['json', 'geojson'], "optional": ["xml", "sld"]}
+    ]
     if not getattr(settings, 'ADDITIONAL_DATASET_FILE_TYPES', None):
         setattr(settings, 'ADDITIONAL_DATASET_FILE_TYPES', gpkg_config)
     elif 'gpkg' not in [x.get('id') for x in settings.ADDITIONAL_DATASET_FILE_TYPES]:

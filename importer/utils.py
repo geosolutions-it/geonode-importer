@@ -3,7 +3,7 @@ from geonode.geoserver.manager import GeoServerResourceManager
 from geonode.base.models import ResourceBase
 
 def error_handler(exc, exec_id=None):
-    return f'{str(exc.detail if hasattr(exc, "detail") else exc.args[0])} {exec_id}'
+    return f'{str(exc.detail if hasattr(exc, "detail") else exc.args[0])}. Request: {exec_id}'
 
 
 class ImporterConcreteManager(GeoServerResourceManager):

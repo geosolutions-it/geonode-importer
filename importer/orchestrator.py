@@ -17,6 +17,7 @@ from django.utils.module_loading import import_string
 from importer.api.exception import ImportException
 from importer.celery_app import importer_app
 from importer.handlers.base import BaseHandler
+from importer.utils import error_handler
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,10 @@ class ImportOrchestrator:
         return None
 
     def load_handler(self, module_path):
-        return import_string(module_path)
+        try:
+            return import_string(module_path)
+        except Exception as e:
+            raise ImportException(detail=f"The handler is not available: {module_path}")
 
     def get_execution_object(self, exec_id):
         '''
@@ -58,7 +62,7 @@ class ImportOrchestrator:
             raise ImportException("The selected UUID does not exists")
         return req.first()
 
-    def perform_next_step(self, execution_id: str, action: str, step: str = None, layer_name:str = None, alternate:str = None, handler_module_path: str = None, **kwargs) -> None:
+    def perform_next_step(self, execution_id: str, action: str, handler_module_path: str, step: str = None, layer_name:str = None, alternate:str = None, **kwargs) -> None:
         '''
         It takes the executionRequest detail to extract which was the last step
         and take from the task_lists provided by the ResourceType handler
@@ -125,7 +129,7 @@ class ImportOrchestrator:
             self.set_as_completed(execution_id)
             return
         except Exception as e:
-            self.set_as_failed(execution_id, reason=e.args[0])
+            self.set_as_failed(execution_id, reason=error_handler(e, execution_id))
             raise e
 
     def set_as_failed(self, execution_id, reason=None):
@@ -159,6 +163,7 @@ class ImportOrchestrator:
         We use that to filter out all the task execution that are still in progress.
         if any is failed, we raise it.
         '''
+        execution_id = str(execution_id)  # force it as string to be sure
         lower_exec_id = execution_id.replace('-', '_').lower()
         exec_result = TaskResult.objects.filter(
             Q(task_args__icontains=lower_exec_id) | Q(task_kwargs__icontains=lower_exec_id) | Q(result__icontains=lower_exec_id)
@@ -169,6 +174,9 @@ class ImportOrchestrator:
             logger.info(f"Execution progress with id {execution_id} is not finished yet, continuing")
             return
         elif exec_result.all().filter(status=states.FAILURE).exists():
+            '''
+            Should set it fail if all the execution are done and at least 1 is failed
+            '''
             failed = [x.task_id for x in exec_result.filter(status=states.FAILURE)]
             _log_message = f"For the execution ID {execution_id} The following celery task are failed: {failed}"
             logger.error(_log_message)
@@ -183,7 +191,7 @@ class ImportOrchestrator:
         user: get_user_model,
         func_name: str,
         step: str,
-        input_params: dict,
+        input_params: dict = {},
         resource=None,
         legacy_upload_name="",
         action=None,
